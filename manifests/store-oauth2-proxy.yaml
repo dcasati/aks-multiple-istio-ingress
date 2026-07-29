@@ -1,0 +1,173 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aks-store-demo
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: oauth2-proxy
+  namespace: aks-store-demo
+  annotations:
+    azure.workload.identity/client-id: "OAUTH2_PROXY_UAMI_CLIENT_ID"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: aks-store-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: oauth2-proxy
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.2
+          args:
+            - --http-address=0.0.0.0:4180
+            - --provider=oidc
+            - --scope=openid profile email
+            - --email-domain=*
+            - --upstream=static://200
+            - --reverse-proxy=true
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            - --code-challenge-method=S256
+            - --skip-provider-button=true
+            - --set-xauthrequest=true
+            - --pass-access-token=true
+          envFrom:
+            - secretRef:
+                name: oauth2-proxy
+          ports:
+            - name: http
+              containerPort: 4180
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: aks-store-demo
+spec:
+  type: ClusterIP
+  selector:
+    app: oauth2-proxy
+  ports:
+    - name: http
+      port: 4180
+      targetPort: http
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: store-external
+  namespace: aks-store-demo
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      hostname: "STORE_HOST"
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https
+      hostname: "STORE_HOST"
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: store-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: store-http-redirect
+  namespace: aks-store-demo
+spec:
+  parentRefs:
+    - name: store-external
+      sectionName: http
+  hostnames:
+    - "STORE_HOST"
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: store
+  namespace: aks-store-demo
+spec:
+  parentRefs:
+    - name: store-external
+      sectionName: https
+  hostnames:
+    - "STORE_HOST"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /oauth2
+      backendRefs:
+        - name: oauth2-proxy
+          port: 4180
+    - backendRefs:
+        - name: store-front
+          port: 80
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: store-oauth2
+  namespace: aks-store-demo
+spec:
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: store-external
+  action: CUSTOM
+  provider:
+    name: oauth2-proxy
+  rules:
+    - to:
+        - operation:
+            notPaths:
+              - /oauth2/*
+              - /.well-known/acme-challenge/*

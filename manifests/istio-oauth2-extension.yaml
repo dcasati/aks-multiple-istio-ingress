@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: istio-shared-configmap-asm-1-29
+  namespace: aks-istio-system
+data:
+  mesh: |-
+    extensionProviders:
+      - name: oauth2-proxy
+        envoyExtAuthzHttp:
+          service: oauth2-proxy.aks-store-demo.svc.cluster.local
+          port: 4180
+          includeRequestHeadersInCheck:
+            - cookie
+            - authorization
+          headersToUpstreamOnAllow:
+            - x-auth-request-user
+            - x-auth-request-email
+            - x-auth-request-access-token
+            - authorization
+          headersToDownstreamOnAllow:
+            - set-cookie
+          headersToDownstreamOnDeny:
+            - set-cookie
+            - content-type
+            - location

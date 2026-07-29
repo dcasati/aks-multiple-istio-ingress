@@ -1,0 +1,6 @@
+cluster.config
+.envrc
+secret.yaml
+secret.gzip
+.DS_Store
+._*
