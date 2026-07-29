@@ -25,7 +25,7 @@ sequenceDiagram
     User->>Gateway: GET /oauth2/callback
     Note over Gateway,Authz: /oauth2/* bypasses the CUSTOM policy
     Gateway->>Proxy: Route callback through HTTPRoute
-    Proxy->>Entra: Exchange code and PKCE verifier for tokens
+    Proxy->>Entra: Exchange code, PKCE verifier, and federated assertion
     Entra-->>Proxy: ID and access tokens
     Proxy-->>User: Set secure session cookie and redirect to /
 

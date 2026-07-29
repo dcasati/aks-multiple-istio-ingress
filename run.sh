@@ -1,5 +1,5 @@
-export CLUSTER_NAME="aks-ITSD-FDSS-POC-01"
-export RESOURCE_GROUP="rg-ITSD-FDSS-POC"
+export CLUSTER_NAME="aks-oauth2-proxy-POC-01"
+export RESOURCE_GROUP="rg-oauth2-proxy-POC"
 export LOCATION="westus3"
 export KUBERNETES_VERSION="1.36.1"
 export SYSTEM_NODE_SIZE="Standard_D4s_v4"

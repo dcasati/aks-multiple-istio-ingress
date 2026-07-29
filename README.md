@@ -60,7 +60,7 @@ sequenceDiagram
   User->>Gateway: GET /oauth2/callback
   Note over Gateway,Authz: /oauth2/* bypasses the CUSTOM policy
   Gateway->>Proxy: Route callback through HTTPRoute
-  Proxy->>Entra: Exchange code and PKCE verifier for tokens
+  Proxy->>Entra: Exchange code, PKCE verifier, and federated assertion
   Entra-->>Proxy: ID and access tokens
   Proxy-->>User: Set secure session cookie and redirect to /
 
@@ -90,7 +90,7 @@ Key principles:
 
 - An Azure subscription and Microsoft Entra tenant
 - Azure CLI authenticated with `az login`
-- Permissions to create AKS clusters, managed identities, federated credentials, Entra applications, and service principals
+- Permissions to create AKS clusters, Entra applications, federated credentials, and service principals
 - `kubectl`
 - Helm 3
 - `dig`, `openssl`, `sed`, and `base64`
@@ -100,12 +100,11 @@ The default configuration creates or uses these resources:
 
 | Setting | Default |
 |---|---|
-| Resource group | `rg-ITSD-FDSS-POC` |
+| Resource group | `rg-oauth2-proxy-POC` |
 | Location | `westus3` |
-| AKS cluster | `aks-ITSD-FDSS-POC-01` |
+| AKS cluster | `aks-oauth2-proxy-POC-01` |
 | Kubernetes namespace | `aks-store-demo` |
 | Entra application | `aks-store-demo-oauth2-proxy` |
-| User-assigned managed identity | `aks-store-demo-oauth2-proxy` |
 | Istio revision | `asm-1-29` |
 | oauth2-proxy version | `v7.15.2` |
 | cert-manager version | `v1.21.1` |
@@ -125,7 +124,7 @@ The included [run.sh](run.sh) creates an AKS cluster with Azure CNI Overlay, the
 
    ```bash
    az group create \
-     --name rg-ITSD-FDSS-POC \
+    --name rg-oauth2-proxy-POC \
      --location westus3
    ```
 
@@ -141,8 +140,8 @@ The included [run.sh](run.sh) creates an AKS cluster with Azure CNI Overlay, the
 
    ```bash
    az aks get-credentials \
-     --resource-group rg-ITSD-FDSS-POC \
-     --name aks-ITSD-FDSS-POC-01 \
+    --resource-group rg-oauth2-proxy-POC \
+    --name aks-oauth2-proxy-POC-01 \
      --file ./cluster.config \
      --overwrite-existing
 
@@ -161,7 +160,7 @@ export KUBECONFIG="${PWD}/cluster.config"
 bash deploy-store.sh
 ```
 
-The script prints the final store URL, OAuth callback, gateway address, Entra application client ID, and managed identity client ID.
+The script prints the final store URL, OAuth callback, gateway address, Entra application client ID, and federated credential name.
 
 ## Deploy with a Custom Domain
 
@@ -207,18 +206,18 @@ bash deploy-store.sh
 
 [deploy-store.sh](deploy-store.sh) performs the following operations:
 
-1. Reads the AKS OIDC issuer and creates or reuses a user-assigned managed identity.
-2. Creates a federated credential for the `aks-store-demo/oauth2-proxy` Kubernetes service account.
+1. Reads the AKS OIDC issuer and creates or updates the single-tenant Entra application.
+2. Creates a federated credential on the app registration for the `aks-store-demo/oauth2-proxy` Kubernetes service account.
 3. Deploys the upstream AKS Store Demo and converts its public store services to `ClusterIP`.
 4. Creates and waits for the external Istio Gateway API gateway.
 5. Validates that the selected hostname resolves to the gateway address.
 6. Installs cert-manager and creates a Let's Encrypt certificate, unless certificate files are provided.
-7. Creates or updates the single-tenant Entra application and its callback URI.
-8. Creates the oauth2-proxy Kubernetes Secret without writing credentials to disk.
+7. Updates the Entra callback URI and ensures the enterprise application exists.
+8. Creates the oauth2-proxy Kubernetes Secret with only the client ID, cookie secret, issuer, and redirect URI.
 9. Configures the managed Istio add-on extension provider.
 10. Deploys oauth2-proxy, the HTTPS routes, and the Istio `CUSTOM` authorization policy.
 
-The script reuses the existing Kubernetes Secret on subsequent runs. This avoids creating a new Entra client secret every time it is executed.
+The app registration trusts the projected AKS service account token. oauth2-proxy exchanges that token with Entra instead of using an application password, so no OAuth client secret is created or stored in Kubernetes. The cookie secret remains in a Kubernetes Secret and is reused on subsequent runs.
 
 ## Authentication Flow
 
@@ -276,9 +275,7 @@ Override deployment defaults with environment variables:
 ```bash
 RESOURCE_GROUP="rg-my-aks" \
 CLUSTER_NAME="aks-my-cluster" \
-LOCATION="eastus2" \
 APP_NAME="my-store-oauth2-proxy" \
-UAMI_NAME="my-store-oauth2-proxy" \
 STORE_URL="https://store.example.com" \
 bash deploy-store.sh
 ```
@@ -286,11 +283,9 @@ bash deploy-store.sh
 | Variable | Purpose |
 |---|---|
 | `KUBECONFIG` | Kubeconfig used by `kubectl` |
-| `RESOURCE_GROUP` | Resource group containing the AKS cluster and managed identity |
+| `RESOURCE_GROUP` | Resource group containing the AKS cluster |
 | `CLUSTER_NAME` | Existing AKS cluster name |
-| `LOCATION` | Azure region for the managed identity |
 | `APP_NAME` | Microsoft Entra application display name |
-| `UAMI_NAME` | User-assigned managed identity name |
 | `STORE_URL` | Public HTTPS origin for the store |
 | `TLS_CERT_FILE` | Optional PEM certificate path |
 | `TLS_KEY_FILE` | Optional PEM private key path |
@@ -301,8 +296,8 @@ bash deploy-store.sh
 | Area | Recommendation |
 |---|---|
 | Entra access | The generated app is single-tenant. Apply tenant policies and user or group assignment appropriate for the application. |
-| Client secret | oauth2-proxy uses an Entra client secret for the OIDC code exchange. For production, store and rotate it through an approved secret-management process such as Azure Key Vault with the Secrets Store CSI Driver. |
-| Workload Identity | The service account is federated with a dedicated managed identity. Grant that identity only the Azure roles required by future integrations. |
+| Federated authentication | The app registration trusts only the AKS issuer, oauth2-proxy service account subject, and `api://AzureADTokenExchange` audience. No OAuth client secret is used. |
+| Cookie secret | The session cookie secret remains in a Kubernetes Secret. Protect it with your approved secret-management process, such as Azure Key Vault with the Secrets Store CSI Driver. |
 | Gateway scope | Keep backend services on `ClusterIP` and prevent alternate ingress paths that bypass the authorization policy. |
 | Authorization bypasses | Keep `/oauth2/*` and the ACME challenge path narrowly scoped. Review any additional exclusions carefully. |
 | Images | Pin images by digest and use an approved private registry for production workloads. |
@@ -310,8 +305,6 @@ bash deploy-store.sh
 | Network policy | Restrict access to oauth2-proxy and application services to the required Istio gateway traffic. |
 | Observability | Collect Istio access logs, oauth2-proxy logs, AKS control-plane logs, and metrics with Azure Monitor or your standard platform. |
 | Upgrades | Keep AKS, the managed Istio revision, cert-manager, and oauth2-proxy on supported versions and test upgrades in a non-production cluster. |
-
-> Note: The pod is configured for AKS Workload Identity, but the current oauth2-proxy OIDC flow still uses the Entra confidential-client secret generated by the script. The managed identity does not replace that client secret in this implementation.
 
 ## Cleanup
 
@@ -322,7 +315,7 @@ export KUBECONFIG="${PWD}/cluster.config"
 kubectl delete namespace aks-store-demo
 ```
 
-Delete the Entra application and managed identity:
+Delete the Entra application:
 
 ```bash
 CLIENT_ID=$(az ad app list \
@@ -333,10 +326,6 @@ CLIENT_ID=$(az ad app list \
 if [[ -n "${CLIENT_ID}" ]]; then
   az ad app delete --id "${CLIENT_ID}"
 fi
-
-az identity delete \
-  --resource-group rg-ITSD-FDSS-POC \
-  --name aks-store-demo-oauth2-proxy
 ```
 
 If cert-manager was installed only for this demo, remove it separately:
@@ -350,8 +339,8 @@ Delete the AKS cluster only if it was created specifically for this exercise:
 
 ```bash
 az aks delete \
-  --resource-group rg-ITSD-FDSS-POC \
-  --name aks-ITSD-FDSS-POC-01 \
+  --resource-group rg-oauth2-proxy-POC \
+  --name aks-oauth2-proxy-POC-01 \
   --yes
 ```
 
