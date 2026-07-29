@@ -117,8 +117,9 @@ The example uses these versions:
 
 ## Create the AKS Cluster
 
-The cluster needs the OIDC issuer and Workload Identity enabled. The OIDC issuer
-publishes the keys Entra uses to validate projected service account tokens.
+The cluster needs the OIDC issuer, Workload Identity, and Gateway API enabled.
+The OIDC issuer publishes the keys Entra uses to validate projected service
+account tokens.
 
 ```bash
 export CLUSTER_NAME="aks-oauth2-proxy-POC-01"
@@ -146,6 +147,11 @@ az aks create \
   --enable-workload-identity \
   --enable-azure-service-mesh \
   --revision asm-1-29
+
+az aks update \
+  --name "${CLUSTER_NAME}" \
+  --resource-group "${RESOURCE_GROUP}" \
+  --enable-gateway-api
 
 az aks get-credentials \
   --name "${CLUSTER_NAME}" \
