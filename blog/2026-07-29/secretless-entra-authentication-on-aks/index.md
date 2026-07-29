@@ -89,6 +89,47 @@ The authentication path has two distinct identities:
 PKCE protects the authorization code. Workload Identity replaces the OAuth
 client secret. They solve different problems, and this setup uses both.
 
+## Authentication Sequence
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor User
+  participant DNS as Public DNS
+  participant Gateway as Azure LB and Istio Gateway
+  participant Authz as Envoy ext_authz
+  participant Proxy as oauth2-proxy
+  participant Entra as Microsoft Entra ID
+  participant Store as AKS Store Front
+
+  User->>DNS: Resolve application hostname
+  DNS-->>User: Gateway public IP
+  User->>Gateway: GET / over HTTPS
+  Gateway->>Authz: Apply CUSTOM AuthorizationPolicy
+  Authz->>Proxy: Check cookies and headers
+  Proxy-->>Authz: 302 sign-in response and CSRF cookie
+  Authz-->>Gateway: Deny request with redirect response
+  Gateway-->>User: 302 to Microsoft Entra ID
+
+  User->>Entra: Sign in and grant requested OIDC scopes
+  Entra-->>User: 302 /oauth2/callback with authorization code
+  User->>Gateway: GET /oauth2/callback
+  Note over Gateway,Authz: /oauth2/* bypasses the CUSTOM policy
+  Gateway->>Proxy: Route callback through HTTPRoute
+  Proxy->>Entra: Exchange code, PKCE verifier, and federated assertion
+  Entra-->>Proxy: ID and access tokens
+  Proxy-->>User: Set secure session cookie and redirect to /
+
+  User->>Gateway: GET / with session cookie
+  Gateway->>Authz: Apply CUSTOM AuthorizationPolicy
+  Authz->>Proxy: Validate session cookie
+  Proxy-->>Authz: 202 allow with identity headers
+  Authz-->>Gateway: Allow request
+  Gateway->>Store: Route to store-front:80
+  Store-->>Gateway: Application response
+  Gateway-->>User: Authenticated application response
+```
+
 :::warning Gateway API support with the managed Istio add-on
 At the time of writing, Microsoft documents Gateway API for Istio ingress as not
 yet supported with the AKS managed Istio add-on. The implementation in this post
